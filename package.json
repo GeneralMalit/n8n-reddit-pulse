@@ -1,0 +1,13 @@
+{
+  "name": "redditpulse-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @redditpulse/web",
+    "build": "npm run build --workspace @redditpulse/web",
+    "lint": "npm run lint --workspace @redditpulse/web"
+  }
+}

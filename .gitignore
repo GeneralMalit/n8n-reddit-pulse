@@ -1,0 +1,8 @@
+node_modules/
+apps/web/node_modules/
+apps/web/.next/
+apps/web/.env.local
+n8n/.n8n-runtime.log
+n8n/.n8n-runtime.err.log
+.DS_Store
+Thumbs.db
