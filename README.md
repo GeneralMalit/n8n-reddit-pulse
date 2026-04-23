@@ -1,56 +1,225 @@
 # RedditPulse
 
-RedditPulse is a personal Reddit digest tool built as a monorepo. The MVP combines:
+RedditPulse is a local-admin Reddit digest product built to show an end-to-end automation stack: a Next.js control surface, a visible node-driven n8n workflow, and Supabase-backed persistence for runs, digests, and source links.
 
-- a `Next.js + TypeScript` admin app in [`apps/web`](D:\Desktop\Main\Files\Programming\Projects\n8n Reddit Pulse\apps\web)
-- Supabase schema and seed files in [`supabase`](D:\Desktop\Main\Files\Programming\Projects\n8n Reddit Pulse\supabase)
-- an n8n workflow blueprint in [`n8n/workflows`](D:\Desktop\Main\Files\Programming\Projects\n8n Reddit Pulse\n8n\workflows)
+The app is intentionally narrow. A user saves runtime settings, manages a subreddit roster, manually triggers a run, and lets n8n fetch Reddit posts, summarize the selected threads, and write the finished digest back to Supabase for display in the UI.
 
-## Workspace Layout
+## Current UI
 
-- `apps/web`: setup screen, subreddit management, manual run trigger, and run archive UI
-- `supabase/migrations`: MVP database schema
-- `supabase/seed.sql`: starter config and sample data
-- `n8n/workflows/redditpulse-manual-run.json`: n8n workflow export blueprint
-- `n8n/README.md`: workflow setup notes and prompt contract
+These screenshots reflect the current local build in this repository.
 
-## Current Status
+### Dashboard
 
-The repo is no longer day-zero. Current handoff state:
+![RedditPulse dashboard](assets/p1.png)
 
-- the frontend MVP scaffold is implemented and builds successfully
-- Supabase schema and seed files are present in-repo
-- `apps/web/.env.local` has been populated locally with the current Supabase URL, the provided Supabase key, and the Gemini API key
-- Codex MCP config was updated locally to point the Supabase MCP entry at project `keznlbbvitqrcndkmaoc`
-- `n8n` was installed globally and verified locally at version `2.17.4`
+### Settings
 
-## Handoff Notes
+![RedditPulse settings](assets/p2.png)
 
-- The app is ready for local UI testing right now.
-- Full end-to-end behavior still depends on live Supabase data plus an imported and configured n8n workflow.
-- In the previous thread, the generic Supabase MCP discovery calls did not work from that session even though the new thread was able to use Supabase MCP. Continue MCP-based Supabase work from the fresh thread.
-- The provided Supabase key was used exactly as given. If write operations fail, verify whether that key is truly a service-role key or only a publishable key.
+## What the project does
 
-## Quick Start
+- Manual run trigger from a focused dashboard instead of a general-purpose admin panel
+- Subreddit roster management with per-source enable and image-processing toggles
+- Count-based digest defaults for:
+  - how many Reddit posts are fetched per subreddit
+  - how many of those fetched posts are actually used in the digest
+- Model selection for the Gemini/Gemma summarization request
+- n8n workflow orchestration that:
+  - receives the run from the app webhook
+  - creates the run row first
+  - fetches Reddit `hot` listings
+  - branches for text-only vs image-assisted prompt prep
+  - branches for live model generation vs debug-seeded output
+  - writes digests and sources directly into Supabase
+- Frontend briefing cards that render the latest persisted digest output with linked sources
 
-1. Install dependencies from the repo root with `npm install`.
-2. Copy [`apps/web/.env.example`](D:\Desktop\Main\Files\Programming\Projects\n8n Reddit Pulse\apps\web\.env.example) to `.env.local` inside `apps/web`.
-3. Run the SQL in [`supabase/migrations/001_redditpulse_mvp.sql`](D:\Desktop\Main\Files\Programming\Projects\n8n Reddit Pulse\supabase\migrations\001_redditpulse_mvp.sql).
-4. Optionally load [`supabase/seed.sql`](D:\Desktop\Main\Files\Programming\Projects\n8n Reddit Pulse\supabase\seed.sql) for a starter dataset.
-5. Import [`n8n/workflows/redditpulse-manual-run.json`](D:\Desktop\Main\Files\Programming\Projects\n8n Reddit Pulse\n8n\workflows\redditpulse-manual-run.json) into n8n and connect your credentials.
-6. Start the app with `npm run dev`.
+## How it works
 
-## MVP Behavior
+### End-to-end flow
 
-- The app is a no-auth local-admin dashboard.
-- Manual runs are triggered directly from the browser to an n8n webhook.
-- n8n fetches `hot` posts from public Reddit JSON endpoints.
-- Each enabled subreddit produces one digest card per run.
-- Digests are stored in Supabase and rendered as a run archive.
+```mermaid
+flowchart LR
+  user[Operator] --> ui[Next.js control surface]
+  ui -->|POST /api/runs| app[Server route]
+  app -->|webhook payload + secrets| n8n[RedditPulse workflow]
+  n8n --> reddit[Reddit JSON]
+  n8n --> model[Gemini / Gemma model]
+  n8n --> supabase[(Supabase)]
+  supabase --> ui
+```
 
-## Immediate Next Steps
+### Workflow shape
 
-1. Use the fresh Codex thread for Supabase MCP work.
-2. Apply the SQL in [`supabase/migrations/001_redditpulse_mvp.sql`](D:\Desktop\Main\Files\Programming\Projects\n8n Reddit Pulse\supabase\migrations\001_redditpulse_mvp.sql) to the live Supabase project if not already applied.
-3. Start local n8n and import [`n8n/workflows/redditpulse-manual-run.json`](D:\Desktop\Main\Files\Programming\Projects\n8n Reddit Pulse\n8n\workflows\redditpulse-manual-run.json).
-4. Connect the workflow to Supabase and Gemini credentials, then run the first end-to-end manual test from the frontend.
+The workflow is no longer a single code-heavy chain. The checked-in export in [`n8n/workflows/redditpulse-manual-run.json`](n8n/workflows/redditpulse-manual-run.json) is built around visible n8n nodes for the main control points:
+
+```mermaid
+flowchart TD
+  webhook[Webhook] --> normalize[Normalize payload]
+  normalize --> runrow[Create run row]
+  runrow --> split[Split subreddits]
+  split --> fetch[Fetch Reddit listing]
+  fetch --> select[Select digest sources]
+  select --> image{Needs image path?}
+  image -->|No| text[Build text prompt]
+  image -->|Yes| multi[Build multimodal prompt]
+  text --> debug{Debug mode?}
+  multi --> debug
+  debug -->|Live| generate[Generate digest]
+  debug -->|Debug| seed[Seed digest output]
+  generate --> shape[Shape digest payload]
+  seed --> shape
+  shape --> digest[Insert digest row]
+  digest --> sources[Insert digest sources]
+  sources --> done[Mark run complete]
+  done --> response[Webhook response]
+```
+
+## Stack
+
+- Frontend: Next.js 16, React 19, TypeScript, Tailwind CSS 4
+- Automation: n8n `2.17.4`
+- Persistence: Supabase
+- Testing: Vitest, Testing Library, ESLint
+- Summarization path: Gemini/Gemma models selected from the app settings
+
+## Repository layout
+
+```text
+n8n Reddit Pulse/
+  apps/web/                 Next.js control surface and API routes
+  assets/                   README screenshots
+  docs/                     verified state and task-loop docs
+  n8n/                      workflow export and workflow notes
+  scripts/                  local n8n bootstrap and verification scripts
+  supabase/                 schema migration and seed data
+  AGENTS.md                 repo operating model for agents
+  README.md                 project overview
+```
+
+## Local runtime
+
+| Surface | URL |
+|--------|-----|
+| Web app | `http://localhost:3000` |
+| Local n8n | `http://localhost:5678` |
+| Canonical webhook | `http://localhost:5678/webhook/redditpulse-manual` |
+
+## Prerequisites
+
+- Node.js 20+
+- npm 10+
+- local n8n installed and available on `PATH`
+- a Supabase project you can write to
+- a Gemini API key for the selected summarization model
+
+## Local setup
+
+### 1. Install dependencies
+
+```bash
+npm install
+```
+
+### 2. Configure the web app
+
+Copy [`apps/web/.env.example`](apps/web/.env.example) to `apps/web/.env.local`, then provide:
+
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+
+The web app falls back to demo data if those values are missing, but manual runs require the live values.
+
+### 3. Apply the database schema
+
+Run:
+
+- [`supabase/migrations/001_redditpulse_mvp.sql`](supabase/migrations/001_redditpulse_mvp.sql)
+
+Optional starter data:
+
+- [`supabase/seed.sql`](supabase/seed.sql)
+
+### 4. Bootstrap the workflow into local n8n
+
+Start n8n:
+
+```bash
+n8n start -o
+```
+
+Then import and publish the checked-in workflow:
+
+```bash
+npm run n8n:bootstrap
+```
+
+That script re-imports the `RedditPulse` workflow, publishes it, restarts local n8n, and prints the local webhook URL the app should use.
+
+### 5. Start the app
+
+```bash
+npm run dev
+```
+
+### 6. Save runtime settings
+
+In the app settings screen:
+
+- save your Gemini API key
+- save `http://localhost:5678`, the canonical webhook URL, or a supported local n8n workflow-page URL
+- set:
+  - default fetch limit
+  - digest size
+  - summarization model
+
+The setup flow normalizes supported local n8n URLs to the webhook path automatically.
+
+## Verification
+
+### App checks
+
+```bash
+npm run lint
+npm run build
+```
+
+### Workflow verification
+
+```bash
+npm run n8n:verify-manual-run
+```
+
+This is the canonical local runtime verification command for the workflow path. It exercises:
+
+- an app-triggered live manual run
+- an explicit debug run directly against the webhook
+- persisted digest and source writes in Supabase
+
+## Key project docs
+
+- [`AGENTS.md`](AGENTS.md): repo operating model and role boundaries
+- [`docs/verified-state.md`](docs/verified-state.md): evidence-backed current status
+- [`docs/task-loop.md`](docs/task-loop.md): manager/programmer/auditor handoff rules
+- [`apps/web/README.md`](apps/web/README.md): frontend-specific notes
+- [`n8n/README.md`](n8n/README.md): workflow contract, payload shape, and local verification notes
+
+## Current verified behavior
+
+The repository currently has evidence-backed verification for:
+
+- the presence of the web app, n8n workflow export, Supabase schema, and test surface
+- successful local import and publish of the `RedditPulse` workflow with `npm run n8n:bootstrap`
+- successful local end-to-end manual-run verification with `npm run n8n:verify-manual-run`
+- a settings surface that now persists:
+  - default fetch limit
+  - digest size
+  - summarization model
+
+Verified state is tracked in detail in [`docs/verified-state.md`](docs/verified-state.md). That document is the status authority when this README and the code drift.
+
+## Current constraints
+
+- The product is still a local-admin MVP, not a multi-user deployment
+- Runs are manual; scheduling is out of scope in the current slice
+- The workflow uses public Reddit JSON and a direct model call rather than a broader ingestion platform
+- Live behavior still depends on valid Supabase credentials, a reachable local n8n instance, and available Gemini quota
