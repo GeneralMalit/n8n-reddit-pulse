@@ -88,11 +88,9 @@ flowchart TD
 n8n Reddit Pulse/
   apps/web/                 Next.js control surface and API routes
   assets/                   README screenshots
-  docs/                     verified state and task-loop docs
   n8n/                      workflow export and workflow notes
   scripts/                  local n8n bootstrap and verification scripts
   supabase/                 schema migration and seed data
-  AGENTS.md                 repo operating model for agents
   README.md                 project overview
 ```
 
@@ -195,14 +193,6 @@ This is the canonical local runtime verification command for the workflow path. 
 - an explicit debug run directly against the webhook
 - persisted digest and source writes in Supabase
 
-## Key project docs
-
-- [`AGENTS.md`](AGENTS.md): repo operating model and role boundaries
-- [`docs/verified-state.md`](docs/verified-state.md): evidence-backed current status
-- [`docs/task-loop.md`](docs/task-loop.md): manager/programmer/auditor handoff rules
-- [`apps/web/README.md`](apps/web/README.md): frontend-specific notes
-- [`n8n/README.md`](n8n/README.md): workflow contract, payload shape, and local verification notes
-
 ## Current verified behavior
 
 The repository currently has evidence-backed verification for:
@@ -214,8 +204,6 @@ The repository currently has evidence-backed verification for:
   - default fetch limit
   - digest size
   - summarization model
-
-Verified state is tracked in detail in [`docs/verified-state.md`](docs/verified-state.md). That document is the status authority when this README and the code drift.
 
 ## Current constraints
 
