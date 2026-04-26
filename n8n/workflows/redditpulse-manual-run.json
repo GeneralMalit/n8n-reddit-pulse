@@ -1,385 +1,753 @@
 {
-  "name": "RedditPulse Manual Run",
-  "nodes": [
-    {
-      "parameters": {
-        "httpMethod": "POST",
-        "path": "redditpulse-manual",
-        "responseMode": "responseNode"
-      },
-      "id": "1",
-      "name": "Manual Run Webhook",
-      "type": "n8n-nodes-base.webhook",
-      "typeVersion": 2,
-      "position": [-1280, 0],
-      "webhookId": "redditpulse-manual"
-    },
-    {
-      "parameters": {
-        "jsCode": "const body = $json.body ?? $json;\nconst subreddits = Array.isArray(body.subreddits) ? body.subreddits : [];\nreturn [{ json: { triggerMode: body.triggerMode ?? 'manual', sourceListing: body.sourceListing ?? 'hot', defaultFetchLimit: body.defaultFetchLimit ?? 10, defaultSourceLimit: body.defaultSourceLimit ?? 4, digestsLanguage: body.digestsLanguage ?? 'en', debugMode: Boolean(body.debugMode), subreddits, totalSubreddits: subreddits.length, triggeredAt: new Date().toISOString() } }];"
-      },
-      "id": "2",
-      "name": "Normalize Payload",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [-1040, 0]
-    },
-    {
-      "parameters": {
-        "url": "={{$env.SUPABASE_URL}}/rest/v1/runs",
-        "method": "POST",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "apikey", "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}" },
-            { "name": "Authorization", "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}" },
-            { "name": "Content-Type", "value": "application/json" },
-            { "name": "Prefer", "value": "return=representation" }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ ({ status: 'running', source_listing: $json.sourceListing, triggered_at: $json.triggeredAt, total_subreddits: $json.totalSubreddits, notes: $json.debugMode ? 'Manual browser-triggered run using debug mode seeded output.' : 'Manual browser-triggered run.' }) }}"
-      },
-      "id": "3",
-      "name": "Create Run Row",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [-800, 0]
-    },
-    {
-      "parameters": {
-        "jsCode": "const runRow = Array.isArray($json) ? $json[0] : $json;\nconst payload = $item(0).$node['Normalize Payload'].json;\nreturn [{ json: { ...payload, runRow } }];"
-      },
-      "id": "3b",
-      "name": "Attach Run Context",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [-680, 0]
-    },
-    {
-      "parameters": {
-        "fieldToSplitOut": "subreddits",
-        "options": {}
-      },
-      "id": "4",
-      "name": "Split Subreddits",
-      "type": "n8n-nodes-base.splitOut",
-      "typeVersion": 1,
-      "position": [-560, 0]
-    },
-    {
-      "parameters": {
-        "mode": "runOnceForEachItem",
-        "jsCode": "const payload = $item(0).$node['Normalize Payload'].json;\nreturn {\n  json: {\n    subreddit: $json,\n    sourceListing: payload.sourceListing,\n    defaultFetchLimit: payload.defaultFetchLimit,\n    defaultSourceLimit: payload.defaultSourceLimit,\n    debugMode: payload.debugMode,\n  },\n};"
-      },
-      "id": "4b",
-      "name": "Prepare Fetch Context",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [-440, 0]
-    },
-    {
-      "parameters": {
-        "url": "=https://www.reddit.com/r/{{$json.subreddit.name}}/{{$json.sourceListing}}.json?limit={{$json.defaultFetchLimit}}",
-        "method": "GET",
-        "options": {}
-      },
-      "id": "5",
-      "name": "Fetch Reddit Listing",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [-320, 0]
-    },
-    {
-      "parameters": {
-        "jsCode": "const listings = $input.all();\nconst contexts = $('Prepare Fetch Context').all();\n\nreturn listings.map((item, index) => ({\n  json: {\n    ...contexts[index].json,\n    redditListing: item.json,\n  },\n}));"
-      },
-      "id": "5b",
-      "name": "Attach Fetch Context",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [-200, 0]
-    },
-    {
-      "parameters": {
-        "mode": "runOnceForEachItem",
-        "jsCode": "const subreddit = $json.subreddit;\nconst children = $json.redditListing?.data?.children ?? [];\nconst posts = children.map((child) => child.data).sort((a, b) => (b.score + b.num_comments) - (a.score + a.num_comments));\nconst selected = posts.slice(0, $json.defaultSourceLimit ?? 4);\nconst imagePosts = subreddit.processImages ? selected.filter((post) => ['image', 'link'].includes(post.post_hint)) : [];\nreturn { json: { subreddit, selectedPosts: selected, imagePosts, sourceCount: selected.length } };"
-      },
-      "id": "6",
-      "name": "Select Digest Sources",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [-80, 0]
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "boolean": [
-            {
-              "value1": "={{$json.imagePosts.length > 0}}",
-              "value2": true
-            }
-          ]
-        }
-      },
-      "id": "7",
-      "name": "Needs Image Path?",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2,
-      "position": [160, 0]
-    },
-    {
-      "parameters": {
-        "mode": "runOnceForEachItem",
-        "jsCode": "const posts = $json.selectedPosts.map((post) => ({ title: post.title, selftext: post.selftext, score: post.score, num_comments: post.num_comments, permalink: `https://reddit.com${post.permalink}`, author: post.author, preview: post.preview?.images?.[0]?.source?.url ?? null }));\nreturn { json: { ...$json, digestPrompt: `Create one English-language digest for r/${$json.subreddit.name}. Return JSON with headline, summary, and sources. Sources must contain 3-5 items and only reference the provided posts.`, posts } };"
-      },
-      "id": "8",
-      "name": "Build Text Prompt",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [400, -120]
-    },
-    {
-      "parameters": {
-        "mode": "runOnceForEachItem",
-        "jsCode": "const posts = $json.selectedPosts.map((post) => ({ title: post.title, selftext: post.selftext, score: post.score, num_comments: post.num_comments, permalink: `https://reddit.com${post.permalink}`, author: post.author, preview: post.preview?.images?.[0]?.source?.url ?? null, url: post.url, post_hint: post.post_hint ?? null }));\nreturn { json: { ...$json, digestPrompt: `Create one English-language digest for r/${$json.subreddit.name}. Use image context when it improves accuracy. Return JSON with headline, summary, and sources from the provided posts only.`, posts } };"
-      },
-      "id": "9",
-      "name": "Build Multimodal Prompt",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [400, 120]
-    },
-    {
-      "parameters": {
-        "mode": "combine",
-        "combineBy": "combineAll"
-      },
-      "id": "10",
-      "name": "Merge Prompt Paths",
-      "type": "n8n-nodes-base.merge",
-      "typeVersion": 3.2,
-      "position": [640, 0]
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "boolean": [
-            {
-              "value1": "={{$json.debugMode === true}}",
-              "value2": true
-            }
-          ]
-        }
-      },
-      "id": "10b",
-      "name": "Debug Mode?",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2,
-      "position": [760, 0]
-    },
-    {
-      "parameters": {
-        "mode": "runOnceForEachItem",
-        "jsCode": "const subreddit = $json.subreddit;\nconst posts = Array.isArray($json.posts) ? $json.posts.slice(0, 5) : [];\nconst topPosts = posts.slice(0, Math.max(1, Math.min(posts.length, 4)));\nconst summaryBits = topPosts.map((post) => `${post.title} (${post.score ?? 0} score, ${post.num_comments ?? 0} comments)`);\nconst seeded = {\n  headline: `Debug digest for r/${subreddit.name}`,\n  summary: topPosts.length > 0\n    ? `Debug mode is active, so Gemini was skipped. This seeded digest summarizes the selected posts for r/${subreddit.name}: ${summaryBits.join('; ')}.`\n    : `Debug mode is active, so Gemini was skipped. No selected posts were available for r/${subreddit.name}.`,\n  sources: topPosts.map((post) => post.permalink ?? post.title).filter(Boolean),\n};\n\nreturn {\n  json: {\n    ...$json,\n    candidates: [\n      {\n        content: {\n          parts: [\n            {\n              text: JSON.stringify(seeded),\n            },\n          ],\n        },\n      },\n    ],\n  },\n};"
-      },
-      "id": "10c",
-      "name": "Seed Digest Output",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [1000, -120]
-    },
-    {
-      "parameters": {
-        "jsCode": "const responses = $input.all();\nconst contexts = $('Debug Mode?').all();\n\nreturn responses.map((item, index) => ({\n  json: {\n    ...contexts[index].json,\n    ...item.json,\n  },\n}));"
-      },
-      "id": "11b",
-      "name": "Attach Generate Context",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [1000, 120]
-    },
-    {
-      "parameters": {
-        "url": "=https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key={{$env.GEMINI_API_KEY}}",
-        "method": "POST",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [{ "name": "Content-Type", "value": "application/json" }]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ ({ contents: [{ role: 'user', parts: [{ text: $json.digestPrompt }, { text: JSON.stringify($json.posts) }] }], generationConfig: { responseMimeType: 'application/json' } }) }}"
-      },
-      "id": "11",
-      "name": "Generate Digest",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [880, 0]
-    },
-    {
-      "parameters": {
-        "mode": "runOnceForEachItem",
-        "jsCode": "const runRow = $item(0).$node['Attach Run Context'].json.runRow;\nconst subreddit = $json.subreddit;\nconst selectedPosts = $json.selectedPosts ?? [];\nconst defaultSourceLimit = Math.min($item(0).$node['Normalize Payload'].json.defaultSourceLimit ?? 4, 5);\nconst modelText = $json.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';\n\nif (!subreddit) {\n  throw new Error('Missing subreddit context for digest payload');\n}\n\nlet parsed = {};\ntry {\n  parsed = JSON.parse(modelText);\n} catch {\n  parsed = {};\n}\n\nfunction normalizePermalink(value) {\n  if (!value) {\n    return null;\n  }\n\n  const trimmed = String(value).trim();\n  if (!trimmed) {\n    return null;\n  }\n\n  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {\n    return trimmed.replace('http://', 'https://');\n  }\n\n  return `https://reddit.com${trimmed.startsWith('/') ? trimmed : `/${trimmed}`}`;\n}\n\nfunction toSourceFromPost(post, index) {\n  if (!post?.title || !post?.author || !post?.permalink) {\n    return null;\n  }\n\n  return {\n    title: String(post.title).trim(),\n    author: String(post.author).trim(),\n    permalink: normalizePermalink(post.permalink),\n    score: Number(post.score ?? 0),\n    comment_count: Number(post.num_comments ?? 0),\n    preview_image_url: post.preview?.images?.[0]?.source?.url ?? null,\n    is_image_post: ['image', 'link'].includes(post.post_hint ?? ''),\n    sort_rank: index + 1,\n  };\n}\n\nconst fallbackSources = selectedPosts\n  .slice(0, defaultSourceLimit)\n  .map((post, index) => toSourceFromPost(post, index))\n  .filter(Boolean);\n\nconst selectedByTitle = new Map(\n  fallbackSources.map((source, index) => [source.title.toLowerCase(), selectedPosts[index]]),\n);\nconst selectedByPermalink = new Map(\n  fallbackSources.map((source, index) => [source.permalink, selectedPosts[index]]),\n);\n\nconst modelSources = Array.isArray(parsed.sources) ? parsed.sources.slice(0, defaultSourceLimit) : [];\nconst candidateSources = modelSources.length > 0 ? modelSources : fallbackSources;\nconst seenPermalinks = new Set();\n\nfunction coerceSource(entry, index) {\n  const fallbackPost = selectedPosts[index] ?? null;\n\n  if (typeof entry === 'string') {\n    const trimmed = entry.trim();\n    const post = selectedByPermalink.get(normalizePermalink(trimmed))\n      ?? selectedByTitle.get(trimmed.toLowerCase())\n      ?? fallbackPost;\n    const fallback = toSourceFromPost(post, index);\n    if (fallback?.permalink) {\n      seenPermalinks.add(fallback.permalink);\n    }\n    return fallback;\n  }\n\n  if (!entry || typeof entry !== 'object') {\n    const fallback = toSourceFromPost(fallbackPost, index);\n    if (fallback?.permalink) {\n      seenPermalinks.add(fallback.permalink);\n    }\n    return fallback;\n  }\n\n  const normalizedPermalink = normalizePermalink(entry.permalink);\n  const post = (normalizedPermalink ? selectedByPermalink.get(normalizedPermalink) : null)\n    ?? selectedByTitle.get(String(entry.title ?? '').trim().toLowerCase())\n    ?? fallbackPost;\n  const fallback = toSourceFromPost(post, index);\n  const merged = {\n    title: String(entry.title ?? fallback?.title ?? '').trim(),\n    author: String(entry.author ?? fallback?.author ?? '').trim(),\n    permalink: normalizedPermalink ?? fallback?.permalink ?? null,\n    score: Number(entry.score ?? fallback?.score ?? 0),\n    comment_count: Number(entry.num_comments ?? entry.comment_count ?? fallback?.comment_count ?? 0),\n    preview_image_url: entry.preview_image_url ?? entry.preview ?? fallback?.preview_image_url ?? null,\n    is_image_post: Boolean(entry.is_image_post ?? entry.preview_image_url ?? entry.preview ?? fallback?.is_image_post ?? false),\n    sort_rank: index + 1,\n  };\n\n  if (!merged.title || !merged.author || !merged.permalink) {\n    return fallback;\n  }\n\n  if (seenPermalinks.has(merged.permalink)) {\n    return null;\n  }\n\n  seenPermalinks.add(merged.permalink);\n  return merged;\n}\n\nconst normalizedSources = candidateSources\n  .map((source, index) => coerceSource(source, index))\n  .filter((source) => source && source.title && source.author && source.permalink)\n  .slice(0, defaultSourceLimit);\n\nconst finalSources = (normalizedSources.length > 0 ? normalizedSources : fallbackSources).slice(0, 5);\n\nif (finalSources.length === 0) {\n  throw new Error(`No valid digest sources could be derived for r/${subreddit.name}`);\n}\n\nreturn { json: { runId: runRow.id, subredditId: subreddit.id, subredditName: subreddit.name, headline: parsed.headline ?? `Digest for r/${subreddit.name}`, summary: parsed.summary ?? 'No summary returned.', imageContextUsed: subreddit.processImages, sourceCount: finalSources.length, sources: finalSources } };"
-      },
-      "id": "12",
-      "name": "Shape Digest Payload",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [1120, 0]
-    },
-    {
-      "parameters": {
-        "url": "={{$env.SUPABASE_URL}}/rest/v1/run_digests",
-        "method": "POST",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "apikey", "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}" },
-            { "name": "Authorization", "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}" },
-            { "name": "Content-Type", "value": "application/json" },
-            { "name": "Prefer", "value": "return=representation" }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ ({ run_id: $json.runId, subreddit_config_id: $json.subredditId, subreddit_name: $json.subredditName, headline: $json.headline, summary: $json.summary, image_context_used: $json.imageContextUsed, source_count: $json.sourceCount }) }}"
-      },
-      "id": "13",
-      "name": "Insert Digest Row",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [1360, 0]
-    },
-    {
-      "parameters": {
-        "jsCode": "const digestRows = $input.all();\nconst shapedPayloads = $('Shape Digest Payload').all();\nconst selectedPayloads = $('Select Digest Sources').all();\n\nreturn digestRows.flatMap((item, itemIndex) => {\nconst digestRow = Array.isArray(item.json) ? item.json[0] : item.json;\nconst payload = shapedPayloads[itemIndex]?.json;\nconst selectedPosts = selectedPayloads[itemIndex]?.json?.selectedPosts ?? [];\n\nif (!payload) {\n  throw new Error(`Missing shaped digest payload for digest index ${itemIndex}`);\n}\n\nfunction normalizePermalink(value) {\n  if (!value) {\n    return null;\n  }\n\n  const trimmed = String(value).trim();\n  if (!trimmed) {\n    return null;\n  }\n\n  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {\n    return trimmed.replace('http://', 'https://');\n  }\n\n  return `https://reddit.com${trimmed.startsWith('/') ? trimmed : `/${trimmed}`}`;\n}\n\nfunction fallbackFromPost(post, index) {\n  if (!post?.title || !post?.author || !post?.permalink) {\n    return null;\n  }\n\n  return {\n    digest_id: digestRow.id,\n    title: String(post.title).trim(),\n    author: String(post.author).trim(),\n    permalink: normalizePermalink(post.permalink),\n    score: Number(post.score ?? 0),\n    comment_count: Number(post.num_comments ?? 0),\n    preview_image_url: post.preview?.images?.[0]?.source?.url ?? null,\n    is_image_post: ['image', 'link'].includes(post.post_hint ?? ''),\n    sort_rank: index + 1,\n  };\n}\n\nconst rows = (Array.isArray(payload.sources) ? payload.sources : [])\n  .map((source, index) => {\n    const fallback = fallbackFromPost(selectedPosts[index], index);\n    const row = {\n      digest_id: digestRow.id,\n      title: String(source?.title ?? fallback?.title ?? '').trim(),\n      author: String(source?.author ?? fallback?.author ?? '').trim(),\n      permalink: normalizePermalink(source?.permalink ?? fallback?.permalink),\n      score: Number(source?.score ?? fallback?.score ?? 0),\n      comment_count: Number(source?.comment_count ?? source?.num_comments ?? fallback?.comment_count ?? 0),\n      preview_image_url: source?.preview_image_url ?? source?.preview ?? fallback?.preview_image_url ?? null,\n      is_image_post: Boolean(source?.is_image_post ?? source?.preview_image_url ?? source?.preview ?? fallback?.is_image_post ?? false),\n      sort_rank: Number(source?.sort_rank ?? fallback?.sort_rank ?? index + 1),\n    };\n\n    if (!row.title || !row.author || !row.permalink) {\n      return fallback;\n    }\n\n    return row;\n  })\n  .filter((row) => row && row.title && row.author && row.permalink);\n\nif (rows.length === 0) {\n  throw new Error(`No valid digest source rows were available for digest ${digestRow.id}`);\n}\n\nreturn rows.map((row) => ({ json: row }));\n});"
-      },
-      "id": "14",
-      "name": "Expand Digest Sources",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [1600, 0]
-    },
-    {
-      "parameters": {
-        "url": "={{$env.SUPABASE_URL}}/rest/v1/digest_sources",
-        "method": "POST",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "apikey", "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}" },
-            { "name": "Authorization", "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}" },
-            { "name": "Content-Type", "value": "application/json" }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{$json}}"
-      },
-      "id": "15",
-      "name": "Insert Digest Sources",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [1840, 0]
-    },
-    {
-      "parameters": {
-        "url": "={{$env.SUPABASE_URL}}/rest/v1/runs?id=eq.{{$item(0).$node[\"Shape Digest Payload\"].json.runId}}",
-        "method": "PATCH",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "apikey", "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}" },
-            { "name": "Authorization", "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}" },
-            { "name": "Content-Type", "value": "application/json" }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ ({ status: 'succeeded', completed_at: $now }) }}"
-      },
-      "id": "16",
-      "name": "Mark Run Complete",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [2080, 0]
-    },
-    {
-      "parameters": {
-        "url": "={{$env.SUPABASE_URL}}/rest/v1/runs?id=neq.{{$item(0).$node[\"Shape Digest Payload\"].json.runId}}",
-        "method": "DELETE",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "apikey", "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}" },
-            { "name": "Authorization", "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}" }
-          ]
-        },
-        "options": {}
-      },
-      "id": "16b",
-      "name": "Delete Previous Runs",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [2200, 0]
-    },
-    {
-      "parameters": {
-        "respondWith": "json",
-        "responseBody": "={{ ({ ok: true, message: 'RedditPulse manual run accepted.' }) }}",
-        "options": {}
-      },
-      "id": "17",
-      "name": "Respond Success",
-      "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1.4,
-      "position": [2440, 0]
-    }
-  ],
-  "connections": {
-    "Manual Run Webhook": { "main": [[{ "node": "Normalize Payload", "type": "main", "index": 0 }]] },
-    "Normalize Payload": { "main": [[{ "node": "Create Run Row", "type": "main", "index": 0 }]] },
-    "Create Run Row": { "main": [[{ "node": "Attach Run Context", "type": "main", "index": 0 }]] },
-    "Attach Run Context": { "main": [[{ "node": "Split Subreddits", "type": "main", "index": 0 }]] },
-    "Split Subreddits": { "main": [[{ "node": "Prepare Fetch Context", "type": "main", "index": 0 }]] },
-    "Prepare Fetch Context": { "main": [[{ "node": "Fetch Reddit Listing", "type": "main", "index": 0 }]] },
-    "Fetch Reddit Listing": { "main": [[{ "node": "Attach Fetch Context", "type": "main", "index": 0 }]] },
-    "Attach Fetch Context": { "main": [[{ "node": "Select Digest Sources", "type": "main", "index": 0 }]] },
-    "Select Digest Sources": { "main": [[{ "node": "Needs Image Path?", "type": "main", "index": 0 }]] },
-    "Needs Image Path?": {
-      "main": [
-        [{ "node": "Build Multimodal Prompt", "type": "main", "index": 0 }],
-        [{ "node": "Build Text Prompt", "type": "main", "index": 0 }]
-      ]
-    },
-    "Build Text Prompt": { "main": [[{ "node": "Debug Mode?", "type": "main", "index": 0 }]] },
-    "Build Multimodal Prompt": { "main": [[{ "node": "Debug Mode?", "type": "main", "index": 0 }]] },
-    "Debug Mode?": {
-      "main": [
-        [{ "node": "Seed Digest Output", "type": "main", "index": 0 }],
-        [{ "node": "Generate Digest", "type": "main", "index": 0 }]
-      ]
-    },
-    "Seed Digest Output": { "main": [[{ "node": "Shape Digest Payload", "type": "main", "index": 0 }]] },
-    "Generate Digest": { "main": [[{ "node": "Attach Generate Context", "type": "main", "index": 0 }]] },
-    "Attach Generate Context": { "main": [[{ "node": "Shape Digest Payload", "type": "main", "index": 0 }]] },
-    "Shape Digest Payload": { "main": [[{ "node": "Insert Digest Row", "type": "main", "index": 0 }]] },
-    "Insert Digest Row": { "main": [[{ "node": "Expand Digest Sources", "type": "main", "index": 0 }]] },
-    "Expand Digest Sources": { "main": [[{ "node": "Insert Digest Sources", "type": "main", "index": 0 }]] },
-    "Insert Digest Sources": { "main": [[{ "node": "Mark Run Complete", "type": "main", "index": 0 }]] },
-    "Mark Run Complete": { "main": [[{ "node": "Delete Previous Runs", "type": "main", "index": 0 }]] },
-    "Delete Previous Runs": { "main": [[{ "node": "Respond Success", "type": "main", "index": 0 }]] }
-  },
-  "pinData": {},
-  "settings": {
-    "executionOrder": "v1"
-  },
-  "active": false,
-  "versionId": "redditpulse-mvp-v1",
-  "meta": {
-    "templateCredsSetupCompleted": false
-  },
-  "id": "redditpulse-manual-run"
+    "updatedAt":  "2026-04-23T06:31:57.319Z",
+    "createdAt":  "2026-04-22T10:27:38.919Z",
+    "id":  "redditpulse-manual-run",
+    "name":  "RedditPulse",
+    "description":  null,
+    "active":  true,
+    "isArchived":  false,
+    "nodes":  [
+                  {
+                      "parameters":  {
+                                         "httpMethod":  "POST",
+                                         "path":  "redditpulse-manual",
+                                         "responseMode":  "responseNode"
+                                     },
+                      "id":  "1",
+                      "name":  "Manual Run Webhook",
+                      "type":  "n8n-nodes-base.webhook",
+                      "typeVersion":  2,
+                      "position":  [
+                                       -1280,
+                                       0
+                                   ],
+                      "webhookId":  "redditpulse-manual"
+                  },
+                  {
+                      "parameters":  {
+                                         "jsCode":  "const body = $json.body ?? $json;\nconst secrets = body.secrets ?? body.credentials ?? {};\nconst subreddits = Array.isArray(body.subreddits) ? body.subreddits : [];\nconst runId = typeof body.runId === \u0027string\u0027 ? body.runId.trim() : \u0027\u0027;\n\nif (!runId) {\n  throw new Error(\u0027Missing runId in manual run payload\u0027);\n}\n\nfunction coerceDebugMode(value) {\n  if (value === true) {\n    return true;\n  }\n\n  if (value === false || value == null) {\n    return false;\n  }\n\n  if (typeof value === \u0027number\u0027) {\n    return value === 1;\n  }\n\n  if (typeof value === \u0027string\u0027) {\n    const normalized = value.trim().toLowerCase();\n    return normalized === \u0027true\u0027 || normalized === \u00271\u0027 || normalized === \u0027yes\u0027 || normalized === \u0027on\u0027;\n  }\n\n  return false;\n}\nconst defaultSourceLimit = body.defaultSourceLimit ?? body.defaultDigestSize ?? 4;\nconst defaultDigestSize = body.defaultDigestSize ?? defaultSourceLimit;\nreturn [{ json: { runId, triggerMode: body.triggerMode ?? \u0027manual\u0027, sourceListing: body.sourceListing ?? \u0027hot\u0027, defaultFetchLimit: body.defaultFetchLimit ?? 10, defaultSourceLimit, defaultDigestSize, digestsLanguage: body.digestsLanguage ?? \u0027en\u0027, summarizationModel: body.summarizationModel ?? \u0027gemma-4-31b-it\u0027, debugMode: coerceDebugMode(body.debugMode), supabaseUrl: body.supabaseUrl ?? secrets.supabaseUrl, supabaseServiceRoleKey: body.supabaseServiceRoleKey ?? secrets.supabaseServiceRoleKey, geminiApiKey: body.geminiApiKey ?? secrets.geminiApiKey, subreddits, totalSubreddits: subreddits.length, triggeredAt: new Date().toISOString() } }];"
+                                     },
+                      "id":  "2",
+                      "name":  "Normalize Payload",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       -1040,
+                                       0
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "url":  "={{$json.supabaseUrl}}/rest/v1/runs",
+                                         "method":  "POST",
+                                         "sendHeaders":  true,
+                                         "headerParameters":  {
+                                                                  "parameters":  [
+                                                                                     {
+                                                                                         "name":  "apikey",
+                                                                                         "value":  "={{$json.supabaseServiceRoleKey}}"
+                                                                                     },
+                                                                                     {
+                                                                                         "name":  "Authorization",
+                                                                                         "value":  "=Bearer {{$json.supabaseServiceRoleKey}}"
+                                                                                     },
+                                                                                     {
+                                                                                         "name":  "Content-Type",
+                                                                                         "value":  "application/json"
+                                                                                     },
+                                                                                     {
+                                                                                         "name":  "Prefer",
+                                                                                         "value":  "return=representation"
+                                                                                     }
+                                                                                 ]
+                                                              },
+                                         "sendBody":  true,
+                                         "specifyBody":  "json",
+                                         "jsonBody":  "={{ ({ id: $json.runId, status: \u0027running\u0027, source_listing: $json.sourceListing, triggered_at: $json.triggeredAt, total_subreddits: $json.totalSubreddits, notes: $json.debugMode ? \u0027Manual browser-triggered run using debug mode seeded output.\u0027 : \u0027Manual browser-triggered run.\u0027 }) }}"
+                                     },
+                      "id":  "3",
+                      "name":  "Create Run Row",
+                      "type":  "n8n-nodes-base.httpRequest",
+                      "typeVersion":  4.2,
+                      "position":  [
+                                       -800,
+                                       0
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "jsCode":  "const runRow = Array.isArray($json) ? $json[0] : $json;\nconst payload = $item(0).$node[\u0027Normalize Payload\u0027].json;\nreturn [{ json: { ...payload, runRow } }];"
+                                     },
+                      "id":  "3b",
+                      "name":  "Attach Run Context",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       -680,
+                                       0
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "fieldToSplitOut":  "subreddits",
+                                         "options":  {
+
+                                                     }
+                                     },
+                      "id":  "4",
+                      "name":  "Split Subreddits",
+                      "type":  "n8n-nodes-base.splitOut",
+                      "typeVersion":  1,
+                      "position":  [
+                                       -560,
+                                       0
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "mode":  "runOnceForEachItem",
+                                         "jsCode":  "const payload = $item(0).$node[\u0027Normalize Payload\u0027].json;\nreturn {\n  json: {\n    subreddit: $json,\n    sourceListing: payload.sourceListing,\n    defaultFetchLimit: payload.defaultFetchLimit,\n    defaultSourceLimit: payload.defaultSourceLimit,\n    defaultDigestSize: payload.defaultDigestSize,\n    summarizationModel: payload.summarizationModel,\n    debugMode: payload.debugMode,\n    supabaseUrl: payload.supabaseUrl,\n    supabaseServiceRoleKey: payload.supabaseServiceRoleKey,\n    geminiApiKey: payload.geminiApiKey,\n  },\n};"
+                                     },
+                      "id":  "4b",
+                      "name":  "Prepare Fetch Context",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       -440,
+                                       0
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "url":  "=https://www.reddit.com/r/{{$json.subreddit.name}}/{{$json.sourceListing}}.json?limit={{$json.defaultFetchLimit}}",
+                                         "method":  "GET",
+                                         "options":  {
+
+                                                     }
+                                     },
+                      "id":  "5",
+                      "name":  "Fetch Reddit Listing",
+                      "type":  "n8n-nodes-base.httpRequest",
+                      "typeVersion":  4.2,
+                      "position":  [
+                                       -320,
+                                       0
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "jsCode":  "const listings = $input.all();\nconst contexts = $(\u0027Prepare Fetch Context\u0027).all();\n\nreturn listings.map((item, index) =\u003e ({\n  json: {\n    ...contexts[index].json,\n    redditListing: item.json,\n  },\n}));"
+                                     },
+                      "id":  "5b",
+                      "name":  "Attach Fetch Context",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       -200,
+                                       0
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "mode":  "runOnceForEachItem",
+                                         "jsCode":  "const subreddit = $json.subreddit;\nconst children = $json.redditListing?.data?.children ?? [];\nconst posts = children.map((child) =\u003e child.data).sort((a, b) =\u003e (b.score + b.num_comments) - (a.score + a.num_comments));\nconst selected = posts.slice(0, $json.defaultSourceLimit ?? $json.defaultDigestSize ?? 4);\nconst imagePosts = subreddit.processImages ? selected.filter((post) =\u003e [\u0027image\u0027, \u0027link\u0027].includes(post.post_hint)) : [];\nreturn { json: { ...$json, subreddit, selectedPosts: selected, imagePosts, sourceCount: selected.length } };"
+                                     },
+                      "id":  "6",
+                      "name":  "Select Digest Sources",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       -80,
+                                       0
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "conditions":  {
+                                                            "boolean":  [
+                                                                            {
+                                                                                "value1":  "={{$json.imagePosts.length \u003e 0}}",
+                                                                                "value2":  true
+                                                                            }
+                                                                        ]
+                                                        }
+                                     },
+                      "id":  "7",
+                      "name":  "Needs Image Path?",
+                      "type":  "n8n-nodes-base.if",
+                      "typeVersion":  2,
+                      "position":  [
+                                       160,
+                                       0
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "mode":  "runOnceForEachItem",
+                                         "jsCode":  "const httpRequest = this.helpers.httpRequest;\n\nasync function fetchTopComments(post) {\n  const permalink = typeof post?.permalink === \u0027string\u0027 ? post.permalink.trim() : \u0027\u0027;\n\n  if (!permalink) {\n    return [];\n  }\n\n  try {\n    const listing = await httpRequest({\n      method: \u0027GET\u0027,\n      url: `https://www.reddit.com${permalink}.json?sort=top\u0026limit=4`,\n      json: true,\n    });\n\n    return (listing?.[1]?.data?.children ?? [])\n      .map((child) =\u003e child?.data)\n      .filter((comment) =\u003e comment \u0026\u0026 typeof comment.body === \u0027string\u0027)\n      .filter((comment) =\u003e !comment.stickied \u0026\u0026 comment.body !== \u0027[deleted]\u0027 \u0026\u0026 comment.body !== \u0027[removed]\u0027)\n      .slice(0, 3)\n      .map((comment) =\u003e ({\n        author: String(comment.author ?? \u0027\u0027).trim(),\n        body: String(comment.body ?? \u0027\u0027).replace(/\\s+/g, \u0027 \u0027).trim().slice(0, 320),\n        score: Number(comment.score ?? 0),\n      }))\n      .filter((comment) =\u003e comment.author \u0026\u0026 comment.body);\n  } catch {\n    return [];\n  }\n}\n\nconst posts = await Promise.all(($json.selectedPosts ?? []).map(async (post) =\u003e ({\n  title: post.title,\n  selftext: post.selftext,\n  score: post.score,\n  num_comments: post.num_comments,\n  permalink: `https://reddit.com${post.permalink}`,\n  author: post.author,\n  preview_image_url: post.preview?.images?.[0]?.source?.url ?? null,\n  post_hint: post.post_hint ?? null,\n  url: post.url,\n  top_comments: await fetchTopComments(post),\n})));\n\nconst paragraphTarget = Math.min(Math.max(posts.length, 1), 5);\n\nreturn {\n  json: {\n    ...$json,\n    digestPrompt: [\n      \"Write one English-language Reddit digest as strict JSON only.\",\n      \"Return exactly this top-level object shape: {\\\"headline\\\": string, \\\"summary\\\": string, \\\"sources\\\": array}.\",\n      \"headline must be short, specific, and not generic.\",\n      `sources must contain ${Math.min(3, posts.length || 1)}-${Math.min(5, posts.length || 5)} objects selected from the provided posts only.`,\n      \"Each source object must include: title, author, permalink, score, comment_count, preview_image_url, is_image_post, sort_rank.\",\n      `summary must contain exactly ${paragraphTarget} paragraphs, with one paragraph per chosen source post in the same order as the sources array.`,\n      \"Separate paragraphs with a blank line.\",\n      \"Each paragraph must be 3-5 sentences and long enough to read like a real digest paragraph, not a blurb.\",\n      \"Each paragraph must summarize the post itself first, then include notable comment reaction only when supported by the provided top_comments field.\",\n      \"If top_comments is empty or uninformative, do not invent comment discussion.\",\n      \"Keep the writing grounded only in the provided posts and comments. Do not mention being an AI model.\",\n      \"Do not add markdown fences, prose preambles, or extra keys.\",\n      \"The final answer must be valid JSON and only the final answer text should contain that JSON.\",\n      `Subreddit: r/${$json.subreddit.name}`,\n    ].join(\"\\n\"),\n    posts,\n  },\n};"
+                                     },
+                      "id":  "8",
+                      "name":  "Build Text Prompt",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       400,
+                                       -120
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "mode":  "runOnceForEachItem",
+                                         "jsCode":  "const httpRequest = this.helpers.httpRequest;\n\nasync function fetchTopComments(post) {\n  const permalink = typeof post?.permalink === \u0027string\u0027 ? post.permalink.trim() : \u0027\u0027;\n\n  if (!permalink) {\n    return [];\n  }\n\n  try {\n    const listing = await httpRequest({\n      method: \u0027GET\u0027,\n      url: `https://www.reddit.com${permalink}.json?sort=top\u0026limit=4`,\n      json: true,\n    });\n\n    return (listing?.[1]?.data?.children ?? [])\n      .map((child) =\u003e child?.data)\n      .filter((comment) =\u003e comment \u0026\u0026 typeof comment.body === \u0027string\u0027)\n      .filter((comment) =\u003e !comment.stickied \u0026\u0026 comment.body !== \u0027[deleted]\u0027 \u0026\u0026 comment.body !== \u0027[removed]\u0027)\n      .slice(0, 3)\n      .map((comment) =\u003e ({\n        author: String(comment.author ?? \u0027\u0027).trim(),\n        body: String(comment.body ?? \u0027\u0027).replace(/\\s+/g, \u0027 \u0027).trim().slice(0, 320),\n        score: Number(comment.score ?? 0),\n      }))\n      .filter((comment) =\u003e comment.author \u0026\u0026 comment.body);\n  } catch {\n    return [];\n  }\n}\n\nconst posts = await Promise.all(($json.selectedPosts ?? []).map(async (post) =\u003e ({\n  title: post.title,\n  selftext: post.selftext,\n  score: post.score,\n  num_comments: post.num_comments,\n  permalink: `https://reddit.com${post.permalink}`,\n  author: post.author,\n  preview_image_url: post.preview?.images?.[0]?.source?.url ?? null,\n  url: post.url,\n  post_hint: post.post_hint ?? null,\n  top_comments: await fetchTopComments(post),\n})));\n\nconst paragraphTarget = Math.min(Math.max(posts.length, 1), 5);\n\nreturn {\n  json: {\n    ...$json,\n    digestPrompt: [\n      \"Write one English-language Reddit digest as strict JSON only.\",\n      \"Return exactly this top-level object shape: {\\\"headline\\\": string, \\\"summary\\\": string, \\\"sources\\\": array}.\",\n      \"Use preview image context only when it materially improves the summary or source selection.\",\n      \"headline must be short, specific, and not generic.\",\n      `sources must contain ${Math.min(3, posts.length || 1)}-${Math.min(5, posts.length || 5)} objects selected from the provided posts only.`,\n      `summary must contain exactly ${paragraphTarget} paragraphs, with one paragraph per chosen source post in the same order as the sources array.`,\n      \"Separate paragraphs with a blank line.\",\n      \"Each paragraph must be 3-5 sentences and long enough to read like a real digest paragraph, not a blurb.\",\n      \"Each paragraph must summarize the post itself first, then include notable comment reaction only when supported by the provided top_comments field.\",\n      \"If top_comments is empty or uninformative, do not invent comment discussion.\",\n      \"Each source object must include: title, author, permalink, score, comment_count, preview_image_url, is_image_post, sort_rank.\",\n      \"Keep the writing grounded only in the provided posts, image context, and comments. Do not mention being an AI model.\",\n      \"Do not add markdown fences, prose preambles, or extra keys.\",\n      \"The final answer must be valid JSON and only the final answer text should contain that JSON.\",\n      `Subreddit: r/${$json.subreddit.name}`,\n    ].join(\"\\n\"),\n    posts,\n  },\n};"
+                                     },
+                      "id":  "9",
+                      "name":  "Build Multimodal Prompt",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       400,
+                                       120
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "conditions":  {
+                                                            "string":  [
+                                                                           {
+                                                                               "value1":  "={{$json.debugMode ? \u0027debug\u0027 : \u0027live\u0027}}",
+                                                                               "operation":  "equal",
+                                                                               "value2":  "debug"
+                                                                           }
+                                                                       ]
+                                                        }
+                                     },
+                      "id":  "10b",
+                      "name":  "Debug Mode?",
+                      "type":  "n8n-nodes-base.if",
+                      "typeVersion":  2,
+                      "position":  [
+                                       760,
+                                       0
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "mode":  "runOnceForEachItem",
+                                         "jsCode":  "const subreddit = $json.subreddit;\nconst posts = Array.isArray($json.posts) ? $json.posts.slice(0, 5) : [];\nconst topPosts = posts.slice(0, Math.max(1, Math.min(posts.length, 4)));\nconst summaryBits = topPosts.map((post) =\u003e `${post.title} (${post.score ?? 0} score, ${post.num_comments ?? 0} comments)`);\nconst seeded = {\n  headline: `Debug digest for r/${subreddit.name}`,\n  summary: topPosts.length \u003e 0\n    ? `Debug mode is active, so Gemini was skipped. This seeded digest summarizes the selected posts for r/${subreddit.name}: ${summaryBits.join(\u0027; \u0027)}.`\n    : `Debug mode is active, so Gemini was skipped. No selected posts were available for r/${subreddit.name}.`,\n  sources: topPosts.map((post) =\u003e post.permalink ?? post.title).filter(Boolean),\n};\n\nreturn {\n  json: {\n    ...$json,\n    candidates: [\n      {\n        content: {\n          parts: [\n            {\n              text: JSON.stringify(seeded),\n            },\n          ],\n        },\n      },\n    ],\n  },\n};"
+                                     },
+                      "id":  "10c",
+                      "name":  "Seed Digest Output",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       1000,
+                                       -120
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "mode":  "runOnceForEachItem",
+                                         "jsCode":  "let contextItem = null;\n\ntry {\n  contextItem = $(\u0027Build Text Prompt\u0027).item;\n} catch {\n  contextItem = null;\n}\n\nif (!contextItem) {\n  try {\n    contextItem = $(\u0027Build Multimodal Prompt\u0027).item;\n  } catch {\n    contextItem = null;\n  }\n}\n\nif (!contextItem) {\n  throw new Error(\u0027Missing prompt context for generated digest output\u0027);\n}\n\nreturn {\n  json: {\n    ...contextItem.json,\n    ...$json,\n  },\n};"
+                                     },
+                      "id":  "11b",
+                      "name":  "Attach Generate Context",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       1000,
+                                       120
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                      "url":  "=https://generativelanguage.googleapis.com/v1beta/models/{{$json.summarizationModel}}:generateContent?key={{$json.geminiApiKey}}",
+                                         "method":  "POST",
+                                         "sendHeaders":  true,
+                                         "headerParameters":  {
+                                                                  "parameters":  [
+                                                                                     {
+                                                                                         "name":  "Content-Type",
+                                                                                         "value":  "application/json"
+                                                                                     }
+                                                                                 ]
+                                                              },
+                                         "sendBody":  true,
+                                         "specifyBody":  "json",
+                                         "jsonBody":  "={{ ({ contents: [{ role: \u0027user\u0027, parts: [{ text: $json.digestPrompt }, { text: JSON.stringify($json.posts) }] }], generationConfig: { responseMimeType: \u0027application/json\u0027 } }) }}"
+                                     },
+                      "id":  "11",
+                      "name":  "Generate Digest",
+                      "type":  "n8n-nodes-base.httpRequest",
+                      "typeVersion":  4.2,
+                      "position":  [
+                                       880,
+                                       0
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "mode":  "runOnceForEachItem",
+                                         "jsCode":  "if ($json.debugMode !== true) {\n  return { json: $json };\n}\n\nconst subreddit = $json.subreddit;\nconst posts = Array.isArray($json.posts) ? $json.posts.slice(0, 5) : [];\nconst topPosts = posts.slice(0, Math.max(1, Math.min(posts.length, 4)));\nconst summaryBits = topPosts.map((post) =\u003e `${post.title} (${post.score ?? 0} score, ${post.num_comments ?? 0} comments)`);\nconst seeded = {\n  headline: `Debug digest for r/${subreddit.name}`,\n  summary: topPosts.length \u003e 0\n    ? `Debug mode is active, so Gemini was skipped. This seeded digest summarizes the selected posts for r/${subreddit.name}: ${summaryBits.join(\u0027; \u0027)}.`\n    : `Debug mode is active, so Gemini was skipped. No selected posts were available for r/${subreddit.name}.`,\n  sources: topPosts.map((post) =\u003e post.permalink ?? post.title).filter(Boolean),\n};\n\nreturn {\n  json: {\n    ...$json,\n    candidates: [\n      {\n        content: {\n          parts: [\n            {\n              text: JSON.stringify(seeded),\n            },\n          ],\n        },\n      },\n    ],\n  },\n};"
+                                     },
+                      "id":  "11c",
+                      "name":  "Apply Debug Override",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       1120,
+                                       120
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "mode":  "runOnceForEachItem",
+                                         "jsCode":  "const runRow = $item(0).$node[\u0027Attach Run Context\u0027].json.runRow;\nconst subreddit = $json.subreddit;\nconst selectedPosts = $json.selectedPosts ?? [];\nconst defaultSourceLimit = Math.min($item(0).$node[\u0027Normalize Payload\u0027].json.defaultSourceLimit ?? $item(0).$node[\u0027Normalize Payload\u0027].json.defaultDigestSize ?? 4, 5);\nconst modelResponse = $json.candidates?.[0]?.content?.parts ?? [];\n\nif (!subreddit) {\n  throw new Error(\u0027Missing subreddit context for digest payload\u0027);\n}\n\nfunction extractJsonBlock(rawText) {\n  const trimmed = String(rawText ?? \"\").trim();\n\n  if (!trimmed) {\n    return \"\";\n  }\n\n  const objectStart = trimmed.indexOf(\"{\");\n  const arrayStart = trimmed.indexOf(\"[\");\n  const start = objectStart === -1 ? arrayStart : arrayStart === -1 ? objectStart : Math.min(objectStart, arrayStart);\n\n  if (start === -1) {\n    return trimmed;\n  }\n\n  const objectEnd = trimmed.lastIndexOf(\"}\");\n  const arrayEnd = trimmed.lastIndexOf(\"]\");\n  const end = Math.max(objectEnd, arrayEnd);\n\n  if (end \u003c= start) {\n    return trimmed;\n  }\n\n  return trimmed.slice(start, end + 1);\n}\n\nfunction getFinalAnswerText(parts) {\n  if (!Array.isArray(parts)) {\n    return \"\";\n  }\n\n  const finalTextPart = [...parts].reverse().find((part) =\u003e typeof part?.text === \"string\" \u0026\u0026 part.thought !== true);\n  if (finalTextPart) {\n    return finalTextPart.text;\n  }\n\n  const anyTextPart = [...parts].reverse().find((part) =\u003e typeof part?.text === \"string\");\n  return anyTextPart?.text ?? \"\";\n}\n\nfunction parseCandidateDigest(parts) {\n  const answerText = getFinalAnswerText(parts);\n  const extracted = extractJsonBlock(answerText);\n\n  if (!extracted) {\n    return {};\n  }\n\n  try {\n    const parsed = JSON.parse(extracted);\n    return Array.isArray(parsed) ? parsed.find((entry) =\u003e entry \u0026\u0026 typeof entry === \"object\") ?? {} : parsed;\n  } catch {\n    return {};\n  }\n}\n\nconst parsedDigest = parseCandidateDigest(modelResponse);\n\nfunction normalizePermalink(value) {\n  if (!value) {\n    return null;\n  }\n\n  const trimmed = String(value).trim();\n  if (!trimmed) {\n    return null;\n  }\n\n  if (trimmed.startsWith(\"http://\") || trimmed.startsWith(\"https://\")) {\n    return trimmed.replace(\"http://\", \"https://\");\n  }\n\n  return `https://reddit.com${trimmed.startsWith(\"/\") ? trimmed : `/${trimmed}`}`;\n}\n\nfunction toSourceFromPost(post, index) {\n  if (!post?.title || !post?.author || !post?.permalink) {\n    return null;\n  }\n\n  return {\n    title: String(post.title).trim(),\n    author: String(post.author).trim(),\n    permalink: normalizePermalink(post.permalink),\n    score: Number(post.score ?? 0),\n    comment_count: Number(post.num_comments ?? 0),\n    preview_image_url: post.preview?.images?.[0]?.source?.url ?? null,\n    is_image_post: [\"image\", \"link\"].includes(post.post_hint ?? \"\"),\n    sort_rank: index + 1,\n  };\n}\n\nconst fallbackSources = selectedPosts\n  .slice(0, defaultSourceLimit)\n  .map((post, index) =\u003e toSourceFromPost(post, index))\n  .filter(Boolean);\n\nconst selectedByTitle = new Map(\n  fallbackSources.map((source, index) =\u003e [source.title.toLowerCase(), selectedPosts[index]]),\n);\nconst selectedByPermalink = new Map(\n  fallbackSources.map((source, index) =\u003e [source.permalink, selectedPosts[index]]),\n);\n\nconst modelSources = Array.isArray(parsedDigest.sources) ? parsedDigest.sources.slice(0, defaultSourceLimit) : [];\nconst candidateSources = modelSources.length \u003e 0 ? modelSources : fallbackSources;\nconst seenPermalinks = new Set();\n\nfunction coerceSource(entry, index) {\n  const fallbackPost = selectedPosts[index] ?? null;\n\n  if (typeof entry === \"string\") {\n    const trimmed = entry.trim();\n    const post = selectedByPermalink.get(normalizePermalink(trimmed))\n      ?? selectedByTitle.get(trimmed.toLowerCase())\n      ?? fallbackPost;\n    const fallback = toSourceFromPost(post, index);\n    if (fallback?.permalink) {\n      seenPermalinks.add(fallback.permalink);\n    }\n    return fallback;\n  }\n\n  if (!entry || typeof entry !== \"object\") {\n    const fallback = toSourceFromPost(fallbackPost, index);\n    if (fallback?.permalink) {\n      seenPermalinks.add(fallback.permalink);\n    }\n    return fallback;\n  }\n\n  const normalizedPermalink = normalizePermalink(entry.permalink);\n  const post = (normalizedPermalink ? selectedByPermalink.get(normalizedPermalink) : null)\n    ?? selectedByTitle.get(String(entry.title ?? \"\").trim().toLowerCase())\n    ?? fallbackPost;\n  const fallback = toSourceFromPost(post, index);\n  const merged = {\n    title: String(entry.title ?? fallback?.title ?? \"\").trim(),\n    author: String(entry.author ?? fallback?.author ?? \"\").trim(),\n    permalink: normalizedPermalink ?? fallback?.permalink ?? null,\n    score: Number(entry.score ?? fallback?.score ?? 0),\n    comment_count: Number(entry.num_comments ?? entry.comment_count ?? fallback?.comment_count ?? 0),\n    preview_image_url: entry.preview_image_url ?? entry.preview ?? fallback?.preview_image_url ?? null,\n    is_image_post: Boolean(entry.is_image_post ?? entry.preview_image_url ?? entry.preview ?? fallback?.is_image_post ?? false),\n    sort_rank: index + 1,\n  };\n\n  if (!merged.title || !merged.author || !merged.permalink) {\n    return fallback;\n  }\n\n  if (seenPermalinks.has(merged.permalink)) {\n    return null;\n  }\n\n  seenPermalinks.add(merged.permalink);\n  return merged;\n}\n\nconst normalizedSources = candidateSources\n  .map((source, index) =\u003e coerceSource(source, index))\n  .filter((source) =\u003e source \u0026\u0026 source.title \u0026\u0026 source.author \u0026\u0026 source.permalink)\n  .slice(0, defaultSourceLimit);\n\nconst finalSources = (normalizedSources.length \u003e 0 ? normalizedSources : fallbackSources).slice(0, 5);\n\nif (finalSources.length === 0) {\n  throw new Error(`No valid digest sources could be derived for r/${subreddit.name}`);\n}\n\nconst headline = String(parsedDigest.headline ?? `Digest for r/${subreddit.name}`).trim() || `Digest for r/${subreddit.name}`;\nconst summary = String(parsedDigest.summary ?? \"No summary returned.\").trim() || \"No summary returned.\";\n\nreturn { json: { ...$json, runId: runRow.id, subredditId: subreddit.id, subredditName: subreddit.name, headline, summary, imageContextUsed: subreddit.processImages, sourceCount: finalSources.length, sources: finalSources } };"
+                                     },
+                      "id":  "12",
+                      "name":  "Shape Digest Payload",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       1120,
+                                       0
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "url":  "={{$json.supabaseUrl}}/rest/v1/run_digests",
+                                         "method":  "POST",
+                                         "sendHeaders":  true,
+                                         "headerParameters":  {
+                                                                  "parameters":  [
+                                                                                     {
+                                                                                         "name":  "apikey",
+                                                                                         "value":  "={{$json.supabaseServiceRoleKey}}"
+                                                                                     },
+                                                                                     {
+                                                                                         "name":  "Authorization",
+                                                                                         "value":  "=Bearer {{$json.supabaseServiceRoleKey}}"
+                                                                                     },
+                                                                                     {
+                                                                                         "name":  "Content-Type",
+                                                                                         "value":  "application/json"
+                                                                                     },
+                                                                                     {
+                                                                                         "name":  "Prefer",
+                                                                                         "value":  "return=representation"
+                                                                                     }
+                                                                                 ]
+                                                              },
+                                         "sendBody":  true,
+                                         "specifyBody":  "json",
+                                         "jsonBody":  "={{ ({ run_id: $json.runId, subreddit_config_id: $json.subredditId, subreddit_name: $json.subredditName, headline: $json.headline, summary: $json.summary, image_context_used: $json.imageContextUsed, source_count: $json.sourceCount }) }}"
+                                     },
+                      "id":  "13",
+                      "name":  "Insert Digest Row",
+                      "type":  "n8n-nodes-base.httpRequest",
+                      "typeVersion":  4.2,
+                      "position":  [
+                                       1360,
+                                       0
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "jsCode":  "const digestRows = $input.all();\nconst shapedPayloads = $(\u0027Shape Digest Payload\u0027).all();\nconst selectedPayloads = $(\u0027Select Digest Sources\u0027).all();\n\nreturn digestRows.flatMap((item, itemIndex) =\u003e {\nconst digestRow = Array.isArray(item.json) ? item.json[0] : item.json;\nconst payload = shapedPayloads[itemIndex]?.json;\nconst selectedPosts = selectedPayloads[itemIndex]?.json?.selectedPosts ?? [];\n\nif (!payload) {\n  throw new Error(`Missing shaped digest payload for digest index ${itemIndex}`);\n}\n\nfunction normalizePermalink(value) {\n  if (!value) {\n    return null;\n  }\n\n  const trimmed = String(value).trim();\n  if (!trimmed) {\n    return null;\n  }\n\n  if (trimmed.startsWith(\u0027http://\u0027) || trimmed.startsWith(\u0027https://\u0027)) {\n    return trimmed.replace(\u0027http://\u0027, \u0027https://\u0027);\n  }\n\n  return `https://reddit.com${trimmed.startsWith(\u0027/\u0027) ? trimmed : `/${trimmed}`}`;\n}\n\nfunction fallbackFromPost(post, index) {\n  if (!post?.title || !post?.author || !post?.permalink) {\n    return null;\n  }\n\n  return {\n    digest_id: digestRow.id,\n    title: String(post.title).trim(),\n    author: String(post.author).trim(),\n    permalink: normalizePermalink(post.permalink),\n    score: Number(post.score ?? 0),\n    comment_count: Number(post.num_comments ?? 0),\n    preview_image_url: post.preview?.images?.[0]?.source?.url ?? null,\n    is_image_post: [\u0027image\u0027, \u0027link\u0027].includes(post.post_hint ?? \u0027\u0027),\n    sort_rank: index + 1,\n  };\n}\n\nconst rows = (Array.isArray(payload.sources) ? payload.sources : [])\n  .map((source, index) =\u003e {\n    const fallback = fallbackFromPost(selectedPosts[index], index);\n    const row = {\n      digest_id: digestRow.id,\n      title: String(source?.title ?? fallback?.title ?? \u0027\u0027).trim(),\n      author: String(source?.author ?? fallback?.author ?? \u0027\u0027).trim(),\n      permalink: normalizePermalink(source?.permalink ?? fallback?.permalink),\n      score: Number(source?.score ?? fallback?.score ?? 0),\n      comment_count: Number(source?.comment_count ?? source?.num_comments ?? fallback?.comment_count ?? 0),\n      preview_image_url: source?.preview_image_url ?? source?.preview ?? fallback?.preview_image_url ?? null,\n      is_image_post: Boolean(source?.is_image_post ?? source?.preview_image_url ?? source?.preview ?? fallback?.is_image_post ?? false),\n      sort_rank: Number(source?.sort_rank ?? fallback?.sort_rank ?? index + 1),\n    };\n\n    if (!row.title || !row.author || !row.permalink) {\n      return fallback;\n    }\n\n    return row;\n  })\n  .filter((row) =\u003e row \u0026\u0026 row.title \u0026\u0026 row.author \u0026\u0026 row.permalink);\n\nif (rows.length === 0) {\n  throw new Error(`No valid digest source rows were available for digest ${digestRow.id}`);\n}\n\nreturn rows.map((row) =\u003e ({ json: row }));\n});"
+                                     },
+                      "id":  "14",
+                      "name":  "Expand Digest Sources",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       1600,
+                                       0
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "url":  "={{$item(0).$node[\"Shape Digest Payload\"].json.supabaseUrl}}/rest/v1/digest_sources",
+                                         "method":  "POST",
+                                         "sendHeaders":  true,
+                                         "headerParameters":  {
+                                                                  "parameters":  [
+                                                                                     {
+                                                                                         "name":  "apikey",
+                                                                                         "value":  "={{$item(0).$node[\"Shape Digest Payload\"].json.supabaseServiceRoleKey}}"
+                                                                                     },
+                                                                                     {
+                                                                                         "name":  "Authorization",
+                                                                                         "value":  "=Bearer {{$item(0).$node[\"Shape Digest Payload\"].json.supabaseServiceRoleKey}}"
+                                                                                     },
+                                                                                     {
+                                                                                         "name":  "Content-Type",
+                                                                                         "value":  "application/json"
+                                                                                     }
+                                                                                 ]
+                                                              },
+                                         "sendBody":  true,
+                                         "specifyBody":  "json",
+                                         "jsonBody":  "={{$json}}"
+                                     },
+                      "id":  "15",
+                      "name":  "Insert Digest Sources",
+                      "type":  "n8n-nodes-base.httpRequest",
+                      "typeVersion":  4.2,
+                      "position":  [
+                                       1840,
+                                       0
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "url":  "={{$item(0).$node[\"Shape Digest Payload\"].json.supabaseUrl}}/rest/v1/runs?id=eq.{{$item(0).$node[\"Shape Digest Payload\"].json.runId}}",
+                                         "method":  "PATCH",
+                                         "sendHeaders":  true,
+                                         "headerParameters":  {
+                                                                  "parameters":  [
+                                                                                     {
+                                                                                         "name":  "apikey",
+                                                                                         "value":  "={{$item(0).$node[\"Shape Digest Payload\"].json.supabaseServiceRoleKey}}"
+                                                                                     },
+                                                                                     {
+                                                                                         "name":  "Authorization",
+                                                                                         "value":  "=Bearer {{$item(0).$node[\"Shape Digest Payload\"].json.supabaseServiceRoleKey}}"
+                                                                                     },
+                                                                                     {
+                                                                                         "name":  "Content-Type",
+                                                                                         "value":  "application/json"
+                                                                                     }
+                                                                                 ]
+                                                              },
+                                         "sendBody":  true,
+                                         "specifyBody":  "json",
+                                         "jsonBody":  "={{ ({ status: \u0027succeeded\u0027, completed_at: $now }) }}"
+                                     },
+                      "id":  "16",
+                      "name":  "Mark Run Complete",
+                      "type":  "n8n-nodes-base.httpRequest",
+                      "typeVersion":  4.2,
+                      "position":  [
+                                       2080,
+                                       0
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "respondWith":  "json",
+                                         "responseBody":  "={{ ({ ok: true, message: \u0027RedditPulse manual run accepted.\u0027 }) }}",
+                                         "options":  {
+
+                                                     }
+                                     },
+                      "id":  "17",
+                      "name":  "Respond Success",
+                      "type":  "n8n-nodes-base.respondToWebhook",
+                      "typeVersion":  1.4,
+                      "position":  [
+                                       2440,
+                                       0
+                                   ]
+                  }
+              ],
+    "connections":  {
+                        "Manual Run Webhook":  {
+                                                   "main":  [
+                                                                [
+                                                                    {
+                                                                        "node":  "Normalize Payload",
+                                                                        "type":  "main",
+                                                                        "index":  0
+                                                                    }
+                                                                ]
+                                                            ]
+                                               },
+                        "Normalize Payload":  {
+                                                  "main":  [
+                                                               [
+                                                                   {
+                                                                       "node":  "Create Run Row",
+                                                                       "type":  "main",
+                                                                       "index":  0
+                                                                   }
+                                                               ]
+                                                           ]
+                                              },
+                        "Create Run Row":  {
+                                               "main":  [
+                                                            [
+                                                                {
+                                                                    "node":  "Attach Run Context",
+                                                                    "type":  "main",
+                                                                    "index":  0
+                                                                }
+                                                            ]
+                                                        ]
+                                           },
+                        "Attach Run Context":  {
+                                                   "main":  [
+                                                                [
+                                                                    {
+                                                                        "node":  "Split Subreddits",
+                                                                        "type":  "main",
+                                                                        "index":  0
+                                                                    }
+                                                                ]
+                                                            ]
+                                               },
+                        "Split Subreddits":  {
+                                                 "main":  [
+                                                              [
+                                                                  {
+                                                                      "node":  "Prepare Fetch Context",
+                                                                      "type":  "main",
+                                                                      "index":  0
+                                                                  }
+                                                              ]
+                                                          ]
+                                             },
+                        "Prepare Fetch Context":  {
+                                                      "main":  [
+                                                                   [
+                                                                       {
+                                                                           "node":  "Fetch Reddit Listing",
+                                                                           "type":  "main",
+                                                                           "index":  0
+                                                                       }
+                                                                   ]
+                                                               ]
+                                                  },
+                        "Fetch Reddit Listing":  {
+                                                     "main":  [
+                                                                  [
+                                                                      {
+                                                                          "node":  "Attach Fetch Context",
+                                                                          "type":  "main",
+                                                                          "index":  0
+                                                                      }
+                                                                  ]
+                                                              ]
+                                                 },
+                        "Attach Fetch Context":  {
+                                                     "main":  [
+                                                                  [
+                                                                      {
+                                                                          "node":  "Select Digest Sources",
+                                                                          "type":  "main",
+                                                                          "index":  0
+                                                                      }
+                                                                  ]
+                                                              ]
+                                                 },
+                        "Select Digest Sources":  {
+                                                      "main":  [
+                                                                   [
+                                                                       {
+                                                                           "node":  "Needs Image Path?",
+                                                                           "type":  "main",
+                                                                           "index":  0
+                                                                       }
+                                                                   ]
+                                                               ]
+                                                  },
+                        "Needs Image Path?":  {
+                                                  "main":  [
+                                                               [
+                                                                   {
+                                                                       "node":  "Build Text Prompt",
+                                                                       "type":  "main",
+                                                                       "index":  0
+                                                                   }
+                                                               ],
+                                                               [
+                                                                   {
+                                                                       "node":  "Build Multimodal Prompt",
+                                                                       "type":  "main",
+                                                                       "index":  0
+                                                                   }
+                                                               ]
+                                                           ]
+                                              },
+                        "Build Text Prompt":  {
+                                                  "main":  [
+                                                               [
+                                                                   {
+                                                                       "node":  "Debug Mode?",
+                                                                       "type":  "main",
+                                                                       "index":  0
+                                                                   }
+                                                               ]
+                                                           ]
+                                              },
+                        "Build Multimodal Prompt":  {
+                                                        "main":  [
+                                                                     [
+                                                                         {
+                                                                             "node":  "Debug Mode?",
+                                                                             "type":  "main",
+                                                                             "index":  0
+                                                                         }
+                                                                     ]
+                                                                 ]
+                                                    },
+                        "Debug Mode?":  {
+                                            "main":  [
+                                                         [
+                                                             {
+                                                                 "node":  "Generate Digest",
+                                                                 "type":  "main",
+                                                                 "index":  0
+                                                             }
+                                                         ],
+                                                         [
+                                                             {
+                                                                 "node":  "Seed Digest Output",
+                                                                 "type":  "main",
+                                                                 "index":  0
+                                                             }
+                                                         ]
+                                                     ]
+                                        },
+                        "Seed Digest Output":  {
+                                                   "main":  [
+                                                                [
+                                                                    {
+                                                                        "node":  "Shape Digest Payload",
+                                                                        "type":  "main",
+                                                                        "index":  0
+                                                                    }
+                                                                ]
+                                                            ]
+                                               },
+                        "Generate Digest":  {
+                                                "main":  [
+                                                             [
+                                                                 {
+                                                                     "node":  "Attach Generate Context",
+                                                                     "type":  "main",
+                                                                     "index":  0
+                                                                 }
+                                                             ]
+                                                         ]
+                                            },
+                        "Attach Generate Context":  {
+                                                        "main":  [
+                                                                     [
+                                                                         {
+                                                                             "node":  "Apply Debug Override",
+                                                                             "type":  "main",
+                                                                             "index":  0
+                                                                         }
+                                                                     ]
+                                                                 ]
+                                                    },
+                        "Apply Debug Override":  {
+                                                     "main":  [
+                                                                  [
+                                                                      {
+                                                                          "node":  "Shape Digest Payload",
+                                                                          "type":  "main",
+                                                                          "index":  0
+                                                                      }
+                                                                  ]
+                                                              ]
+                                                 },
+                        "Shape Digest Payload":  {
+                                                     "main":  [
+                                                                  [
+                                                                      {
+                                                                          "node":  "Insert Digest Row",
+                                                                          "type":  "main",
+                                                                          "index":  0
+                                                                      }
+                                                                  ]
+                                                              ]
+                                                 },
+                        "Insert Digest Row":  {
+                                                  "main":  [
+                                                               [
+                                                                   {
+                                                                       "node":  "Expand Digest Sources",
+                                                                       "type":  "main",
+                                                                       "index":  0
+                                                                   }
+                                                               ]
+                                                           ]
+                                              },
+                        "Expand Digest Sources":  {
+                                                      "main":  [
+                                                                   [
+                                                                       {
+                                                                           "node":  "Insert Digest Sources",
+                                                                           "type":  "main",
+                                                                           "index":  0
+                                                                       }
+                                                                   ]
+                                                               ]
+                                                  },
+                        "Insert Digest Sources":  {
+                                                      "main":  [
+                                                                   [
+                                                                       {
+                                                                           "node":  "Mark Run Complete",
+                                                                           "type":  "main",
+                                                                           "index":  0
+                                                                       }
+                                                                   ]
+                                                               ]
+                                                  },
+                        "Mark Run Complete":  {
+                                                  "main":  [
+                                                               [
+                                                                   {
+                                                                       "node":  "Respond Success",
+                                                                       "type":  "main",
+                                                                       "index":  0
+                                                                   }
+                                                               ]
+                                                           ]
+                                              },
+                        "Respond Success":  {
+
+                                            }
+                    },
+    "settings":  {
+                     "executionOrder":  "v1"
+                 },
+    "staticData":  null,
+    "meta":  {
+                 "templateCredsSetupCompleted":  false
+             },
+    "pinData":  {
+
+                },
+    "versionId":  "c2d606f4-1cbd-444d-b308-f5c312a3e53f",
+    "activeVersionId":  "c2d606f4-1cbd-444d-b308-f5c312a3e53f",
+    "versionCounter":  96,
+    "triggerCount":  1,
+    "tags":  [
+
+             ],
+    "shared":  [
+                   {
+                       "updatedAt":  "2026-04-22T10:27:38.921Z",
+                       "createdAt":  "2026-04-22T10:27:38.921Z",
+                       "role":  "workflow:owner",
+                       "workflowId":  "redditpulse-manual-run",
+                       "projectId":  "eAs6NkfppcMPUxA3",
+                       "project":  {
+                                       "updatedAt":  "2026-04-22T10:43:37.221Z",
+                                       "createdAt":  "2026-04-22T10:27:27.198Z",
+                                       "id":  "eAs6NkfppcMPUxA3",
+                                       "name":  "General  Malit \u003cgeneralmalit07@gmail.com\u003e",
+                                       "type":  "personal",
+                                       "icon":  null,
+                                       "description":  null,
+                                       "creatorId":  "4bbf4dbe-cb43-4f7d-80a8-9ecf5362572b"
+                                   }
+                   }
+               ],
+    "versionMetadata":  {
+                            "name":  null,
+                            "description":  null
+                        }
 }

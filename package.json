@@ -8,6 +8,8 @@
   "scripts": {
     "dev": "npm run dev --workspace @redditpulse/web",
     "build": "npm run build --workspace @redditpulse/web",
-    "lint": "npm run lint --workspace @redditpulse/web"
+    "lint": "npm run lint --workspace @redditpulse/web",
+    "n8n:bootstrap": "node scripts/bootstrap-n8n.mjs",
+    "n8n:verify-manual-run": "node scripts/verify-manual-run.mjs"
   }
 }

@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { IBM_Plex_Mono, Space_Grotesk } from "next/font/google";
+import "@fontsource/reddit-sans/400.css";
+import "@fontsource/reddit-sans/700.css";
 import "./globals.css";
 
 const spaceGrotesk = Space_Grotesk({

@@ -1,12 +1,17 @@
-import type { DashboardData } from "@/lib/types";
+import {
+  DEFAULT_SUMMARIZATION_MODEL,
+  type DashboardData,
+} from "@/lib/types";
+import { LOCAL_N8N_WEBHOOK_URL } from "@/lib/n8n-webhook";
 
 export const demoDashboardData: DashboardData = {
   mode: "demo",
   config: {
     geminiApiKey: "AIza-demo-key-redacted",
-    n8nWebhookUrl: "https://n8n.local/webhook/redditpulse-manual",
+    n8nWebhookUrl: LOCAL_N8N_WEBHOOK_URL,
     defaultFetchLimit: 10,
-    defaultSourceLimit: 4,
+    defaultDigestSize: 4,
+    summarizationModel: DEFAULT_SUMMARIZATION_MODEL,
   },
   subreddits: [
     {

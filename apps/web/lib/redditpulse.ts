@@ -1,13 +1,17 @@
 import { cache } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { demoDashboardData } from "@/lib/demo-data";
-import type {
-  AppConfig,
-  DashboardData,
-  DigestRecord,
-  DigestSource,
-  RunRecord,
-  SubredditConfig,
+import {
+  DEFAULT_SUMMARIZATION_MODEL,
+  SUMMARIZATION_MODEL_OPTIONS,
+  type AppConfig,
+  type DashboardData,
+  type DigestRecord,
+  type DigestSource,
+  type RunRecord,
+  type SettingsData,
+  type SubredditConfig,
+  type SummarizationModelId,
 } from "@/lib/types";
 
 type ConfigRow = {
@@ -15,7 +19,8 @@ type ConfigRow = {
   gemini_api_key: string;
   n8n_webhook_url: string;
   default_fetch_limit: number;
-  default_source_limit: number;
+  default_digest_size?: number | null;
+  summarization_model?: string | null;
 };
 
 type SubredditRow = {
@@ -60,6 +65,41 @@ type SourceRow = {
   sort_rank: number;
 };
 
+type SupabaseClient = NonNullable<ReturnType<typeof getSupabaseServerClient>>;
+
+const DEFAULT_APP_CONFIG: AppConfig = {
+  geminiApiKey: "",
+  n8nWebhookUrl: "",
+  defaultFetchLimit: 10,
+  defaultDigestSize: 4,
+  summarizationModel: DEFAULT_SUMMARIZATION_MODEL,
+};
+
+const VALID_SUMMARIZATION_MODELS = new Set(
+  SUMMARIZATION_MODEL_OPTIONS.map((option) => option.value),
+);
+
+function normalizeSummarizationModel(
+  value: string | null | undefined,
+): SummarizationModelId {
+  if (typeof value === "string" && VALID_SUMMARIZATION_MODELS.has(value as SummarizationModelId)) {
+    return value as SummarizationModelId;
+  }
+
+  return DEFAULT_SUMMARIZATION_MODEL;
+}
+
+function normalizeCount(value: unknown, fallback: number) {
+  const numericValue = Number(value);
+
+  if (!Number.isFinite(numericValue)) {
+    return fallback;
+  }
+
+  const roundedValue = Math.trunc(numericValue);
+  return roundedValue > 0 ? roundedValue : fallback;
+}
+
 export function hasSupabaseEnv() {
   return Boolean(
     process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY,
@@ -85,11 +125,39 @@ export function getSupabaseServerClient() {
 
 export function mapConfigRow(row: ConfigRow): AppConfig {
   return {
-    geminiApiKey: row.gemini_api_key,
-    n8nWebhookUrl: row.n8n_webhook_url,
-    defaultFetchLimit: row.default_fetch_limit,
-    defaultSourceLimit: row.default_source_limit,
+    geminiApiKey: row.gemini_api_key ?? DEFAULT_APP_CONFIG.geminiApiKey,
+    n8nWebhookUrl: row.n8n_webhook_url ?? DEFAULT_APP_CONFIG.n8nWebhookUrl,
+    defaultFetchLimit: normalizeCount(
+      row.default_fetch_limit,
+      DEFAULT_APP_CONFIG.defaultFetchLimit,
+    ),
+    defaultDigestSize: normalizeCount(
+      row.default_digest_size,
+      DEFAULT_APP_CONFIG.defaultDigestSize,
+    ),
+    summarizationModel: normalizeSummarizationModel(row.summarization_model),
   };
+}
+
+function sanitizeDashboardConfig(config: AppConfig): AppConfig {
+  return {
+    ...config,
+    geminiApiKey: "",
+  };
+}
+
+async function loadConfig(client: SupabaseClient) {
+  const configResult = await client
+    .from("app_config")
+    .select("*")
+    .eq("singleton", true)
+    .single();
+
+  if (configResult.error || !configResult.data) {
+    return null;
+  }
+
+  return mapConfigRow(configResult.data as ConfigRow);
 }
 
 export function mapSubredditRow(row: SubredditRow): SubredditConfig {
@@ -151,32 +219,13 @@ function mapRunRow(
   };
 }
 
-export const loadDashboardData = cache(async (): Promise<DashboardData> => {
-  const client = getSupabaseServerClient();
-
-  if (!client) {
-    return demoDashboardData;
-  }
-
-  const [configResult, subredditResult, latestRunResult] = await Promise.all([
-    client.from("app_config").select("*").eq("singleton", true).single(),
-    client
-      .from("subreddit_configs")
-      .select("*")
-      .order("created_at", { ascending: false }),
-    client
-      .from("runs")
-      .select("*")
-      .order("triggered_at", { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-  ]);
-
-  if (configResult.error || subredditResult.error || !configResult.data) {
-    return demoDashboardData;
-  }
-
-  let latestRuns: RunRecord[] = [];
+async function loadLatestRuns(client: SupabaseClient): Promise<RunRecord[]> {
+  const latestRunResult = await client
+    .from("runs")
+    .select("*")
+    .order("triggered_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
   if (!latestRunResult.error && latestRunResult.data) {
     const latestRun = latestRunResult.data as RunRow;
@@ -203,14 +252,68 @@ export const loadDashboardData = cache(async (): Promise<DashboardData> => {
         }
       }
 
-      latestRuns = [mapRunRow(latestRun, digests, sources)];
+      return [mapRunRow(latestRun, digests, sources)];
     }
+  }
+
+  return [];
+}
+
+export async function loadDashboardDataFromClient(
+  client: SupabaseClient,
+): Promise<DashboardData> {
+  const [config, subredditResult, runs] = await Promise.all([
+    loadConfig(client),
+    client
+      .from("subreddit_configs")
+      .select("*")
+      .order("created_at", { ascending: false }),
+    loadLatestRuns(client),
+  ]);
+
+  if (!config || subredditResult.error) {
+    return demoDashboardData;
   }
 
   return {
     mode: "live",
-    config: mapConfigRow(configResult.data as ConfigRow),
+    config: sanitizeDashboardConfig(config),
     subreddits: (subredditResult.data as SubredditRow[]).map(mapSubredditRow),
-    runs: latestRuns,
+    runs,
+  };
+}
+
+export const loadDashboardData = cache(async (): Promise<DashboardData> => {
+  const client = getSupabaseServerClient();
+
+  if (!client) {
+    return demoDashboardData;
+  }
+
+  return loadDashboardDataFromClient(client);
+});
+
+export const loadSettingsData = cache(async (): Promise<SettingsData> => {
+  const client = getSupabaseServerClient();
+
+  if (!client) {
+    return {
+      mode: demoDashboardData.mode,
+      config: demoDashboardData.config,
+    };
+  }
+
+  const config = await loadConfig(client);
+
+  if (!config) {
+    return {
+      mode: demoDashboardData.mode,
+      config: demoDashboardData.config,
+    };
+  }
+
+  return {
+    mode: "live",
+    config,
   };
 });

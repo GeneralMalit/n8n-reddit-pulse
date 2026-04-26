@@ -5,7 +5,8 @@ create table if not exists public.app_config (
   gemini_api_key text not null,
   n8n_webhook_url text not null,
   default_fetch_limit integer not null default 10 check (default_fetch_limit >= 5),
-  default_source_limit integer not null default 4 check (default_source_limit between 3 and 5),
+  default_digest_size integer not null default 4 check (default_digest_size >= 1),
+  summarization_model text not null default 'gemma-4-31b-it' check (summarization_model in ('gemini-3-flash-preview', 'gemma-4-31b-it', 'gemma-3-27b-it', 'gemini-2.5-flash')),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -37,7 +38,7 @@ create table if not exists public.run_digests (
   headline text not null,
   summary text not null,
   image_context_used boolean not null default false,
-  source_count integer not null default 0 check (source_count between 0 and 5),
+  source_count integer not null default 0 check (source_count >= 0),
   created_at timestamptz not null default now()
 );
 

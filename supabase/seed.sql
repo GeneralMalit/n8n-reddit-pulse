@@ -3,20 +3,23 @@ insert into public.app_config (
   gemini_api_key,
   n8n_webhook_url,
   default_fetch_limit,
-  default_source_limit
+  default_digest_size,
+  summarization_model
 )
 values (
   true,
   'AIza-demo-key-redacted',
   'https://n8n.local/webhook/redditpulse-manual',
   10,
-  4
+  4,
+  'gemma-4-31b-it'
 )
 on conflict (singleton) do update
 set gemini_api_key = excluded.gemini_api_key,
     n8n_webhook_url = excluded.n8n_webhook_url,
     default_fetch_limit = excluded.default_fetch_limit,
-    default_source_limit = excluded.default_source_limit;
+    default_digest_size = excluded.default_digest_size,
+    summarization_model = excluded.summarization_model;
 
 insert into public.subreddit_configs (id, name, enabled, process_images)
 values

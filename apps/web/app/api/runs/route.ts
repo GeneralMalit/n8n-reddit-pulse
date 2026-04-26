@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
 import {
   getSupabaseServerClient,
+  loadDashboardDataFromClient,
   mapConfigRow,
   mapSubredditRow,
 } from "@/lib/redditpulse";
 import {
   buildManualRunPayload,
   explainManualRunFailure,
+  redactManualRunDashboardSecrets,
 } from "@/lib/manual-run";
 
 type ConfigRow = {
@@ -14,7 +16,6 @@ type ConfigRow = {
   gemini_api_key: string;
   n8n_webhook_url: string;
   default_fetch_limit: number;
-  default_source_limit: number;
 };
 
 type SubredditRow = {
@@ -25,16 +26,46 @@ type SubredditRow = {
   created_at: string;
 };
 
-export async function POST(request: Request) {
-  const attemptId = crypto.randomUUID();
-  const client = getSupabaseServerClient();
-  let requestBody: { debugMode?: boolean } = {};
+type RunStatusRow = {
+  id: string;
+  status: string;
+  notes: string | null;
+  triggered_at: string;
+  completed_at: string | null;
+};
 
-  try {
-    requestBody = (await request.json()) as { debugMode?: boolean };
-  } catch {
-    requestBody = {};
+async function waitForRunCompletion(
+  client: NonNullable<ReturnType<typeof getSupabaseServerClient>>,
+  runId: string,
+  timeoutMs = 240_000,
+) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const result = await client
+      .from("runs")
+      .select("id,status,notes,triggered_at,completed_at")
+      .eq("id", runId)
+      .maybeSingle<RunStatusRow>();
+
+    if (result.error) {
+      throw new Error(result.error.message);
+    }
+
+    if (result.data && result.data.status !== "running") {
+      return result.data;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
   }
+
+  return null;
+}
+
+export async function POST() {
+  const attemptId = crypto.randomUUID();
+  const runId = crypto.randomUUID();
+  const client = getSupabaseServerClient();
 
   if (!client) {
     console.error("[manual-run]", attemptId, "Supabase is not configured");
@@ -83,6 +114,9 @@ export async function POST(request: Request) {
   const enabledSubreddits = (subredditResult.data as SubredditRow[]).map(
     mapSubredditRow,
   );
+  const supabaseUrl = process.env.SUPABASE_URL?.trim() ?? "";
+  const supabaseServiceRoleKey =
+    process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ?? "";
 
   if (!config.n8nWebhookUrl) {
     console.warn("[manual-run]", attemptId, "missing webhook url");
@@ -102,16 +136,44 @@ export async function POST(request: Request) {
     );
   }
 
-  const payload = buildManualRunPayload(config, enabledSubreddits, {
-    debugMode: requestBody.debugMode,
-  });
+  if (!supabaseUrl || !supabaseServiceRoleKey) {
+    console.error("[manual-run]", attemptId, "missing server-side secrets");
+
+    return NextResponse.json(
+      {
+        error:
+          "Supabase server credentials are missing from apps/web/.env.local.",
+      },
+      { status: 503 },
+    );
+  }
+
+  if (!config.geminiApiKey) {
+    console.warn("[manual-run]", attemptId, "missing gemini key in config");
+
+    return NextResponse.json(
+      { error: "Save a Gemini API key before starting a run." },
+      { status: 400 },
+    );
+  }
+
+  const payload = buildManualRunPayload(
+    config,
+    enabledSubreddits,
+    {
+      supabaseUrl,
+      supabaseServiceRoleKey,
+      geminiApiKey: config.geminiApiKey,
+    },
+    {
+      runId,
+    },
+  );
 
   console.info("[manual-run]", attemptId, "dispatching run", {
     webhookUrl: config.n8nWebhookUrl,
     subredditCount: enabledSubreddits.length,
     defaultFetchLimit: config.defaultFetchLimit,
-    defaultSourceLimit: config.defaultSourceLimit,
-    debugMode: payload.debugMode,
   });
 
   try {
@@ -144,11 +206,48 @@ export async function POST(request: Request) {
 
     console.info("[manual-run]", attemptId, "dispatch accepted");
 
+    const completedRun = await waitForRunCompletion(client, runId);
+
+    if (!completedRun) {
+      console.error("[manual-run]", attemptId, "run timed out", { runId });
+
+      return NextResponse.json(
+        {
+          error:
+            "n8n accepted the run but it did not finish within the API wait window.",
+          runId,
+        },
+        { status: 504 },
+      );
+    }
+
+    const dashboard = await loadDashboardDataFromClient(client);
+    const safeDashboard = redactManualRunDashboardSecrets(dashboard);
+
+    if (completedRun.status !== "succeeded") {
+      console.error("[manual-run]", attemptId, "run finished unsuccessfully", {
+        runId,
+        status: completedRun.status,
+      });
+
+      return NextResponse.json(
+        {
+          error: `n8n accepted the run but it finished with status ${completedRun.status}.`,
+          runId,
+          status: completedRun.status,
+          dashboard: safeDashboard,
+        },
+        { status: 502 },
+      );
+    }
+
     return NextResponse.json({
       ok: true,
-      message: "Manual run sent to n8n.",
+      message: "Manual run completed in n8n.",
+      runId,
+      status: completedRun.status,
       subredditCount: enabledSubreddits.length,
-      debugMode: payload.debugMode,
+      dashboard: safeDashboard,
     });
   } catch (error) {
     const message =
